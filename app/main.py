@@ -16,12 +16,23 @@ from app.routes import (
     seller_dashboard,
     categories,
 )
+from fastapi import Depends
+from sqlalchemy import text
+from app.database import get_db
 
 
 # =====================================================
 # ✅ Configuration FastAPI
 # =====================================================
 app = FastAPI(title="Drops API", version="1.1")
+
+@app.get("/health/db")
+def check_database_connection(db=Depends(get_db)):
+    try:
+        db.execute(text("SELECT 1"))
+        return {"status": "✅ Database connected successfully!"}
+    except Exception as e:
+        return {"status": "❌ Database connection failed!", "error": str(e)}
 
 # =====================================================
 # 🌐 Middleware CORS (doit venir AVANT les routes)

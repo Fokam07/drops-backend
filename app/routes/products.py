@@ -4,34 +4,71 @@ from sqlalchemy import or_, func
 from app.database import get_db
 from app import models
 from app.schemas.product_schema import ProductCreate, ProductResponse
+import os
 
 router = APIRouter(tags=["Products"])
 
 # ==========================================================
 # 🔧 FONCTION UTILITAIRE POUR GÉRER LES IMAGES
 # ==========================================================
+import os
+
 def get_image_url(image_path: str) -> str:
     """
-    Retourne l'URL correcte de l'image :
-    - Si c'est une URL externe (http/https), la retourner telle quelle
-    - Si c'est un chemin local, construire l'URL avec le serveur local
+    Retourne une URL d'image exploitable par le frontend.
     """
     if not image_path:
         return None
-    
-    # Si c'est déjà une URL complète, la retourner telle quelle
-    if image_path.startswith("http://") or image_path.startswith("https://"):
+
+    # 🌍 Garder les URLs externes telles quelles
+    if image_path.startswith(("http://", "https://")):
         return image_path
+
+    # 🧹 Nettoyage complet
+    image_path = image_path.replace("\\", "/").strip()
     
-    # Sinon, c'est une image locale
-    base_url = "http://localhost:8000/uploads/"
+    # 🚫 Supprimer tous les doublons uploads/
+    while "uploads/uploads/" in image_path:
+        image_path = image_path.replace("uploads/uploads/", "uploads/")
     
-    # Nettoyer le chemin
-    clean_path = image_path.lstrip("/")
-    if clean_path.startswith("uploads/"):
-        clean_path = clean_path[8:]  # Enlever "uploads/"
+    # 🚫 Supprimer les doubles slashes
+    image_path = image_path.replace("//", "/")
     
-    return f"{base_url}{clean_path}"
+    # 🧩 S'assurer que ça commence par uploads/ (une seule fois)
+    if not image_path.startswith("uploads/"):
+        image_path = f"uploads/{image_path}"
+
+    # 🔗 Construire l'URL
+    return f"http://localhost:8000/{image_path.lstrip('/')}"
+
+# Ajoutez temporairement cette route pour déboguer
+@router.get("/debug/{id_product}")
+def debug_product(id_product: int, db: Session = Depends(get_db)):
+    product = db.query(models.Product).filter(models.Product.id_product == id_product).first()
+    if not product:
+        raise HTTPException(status_code=404, detail="Produit non trouvé")
+    
+    return {
+        "image_brut_bdd": product.image,  # ⬅️ Ce qui est en BDD
+        "image_url_apres_traitement": get_image_url(product.image)  # ⬅️ Ce qui est retourné
+    }
+
+@router.get("/debug-images")
+def debug_images(db: Session = Depends(get_db)):
+    """Route temporaire pour debugger les chemins d'images"""
+    products = db.query(models.Product).limit(5).all()
+    
+    debug_info = []
+    for p in products:
+        debug_info.append({
+            "id_product": p.id_product,
+            "nom": p.nom,
+            "image_brute_bdd": p.image,
+            "image_url_generee": get_image_url(p.image),
+            "fichier_existe": os.path.exists(p.image.replace("\\", "/").lstrip("/")) if p.image and not p.image.startswith("http") else "URL externe"
+        })
+    
+    return debug_info
 
 
 # ==========================================================

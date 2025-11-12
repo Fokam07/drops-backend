@@ -1,12 +1,29 @@
 from sqlalchemy import create_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+import os
 
-SQLALCHEMY_DATABASE_URL = "mysql+pymysql://root:@localhost:3306/drops"  # adapte ton mot de passe
+# Charger les variables d'environnement
+from dotenv import load_dotenv
+load_dotenv()
+
+DB_USER = os.getenv("DB_USER")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST = os.getenv("DB_HOST")
+DB_PORT = os.getenv("DB_PORT")
+DB_NAME = os.getenv("DB_NAME")
+DB_SSL_CA = os.getenv("DB_SSL_CA")
+
+# ✅ Connexion à Aiven avec SSL
+SQLALCHEMY_DATABASE_URL = (
+    f"mysql+pymysql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+    f"?ssl_ca={DB_SSL_CA}&ssl_verify_cert=false"
+)
+
 
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL,
-    pool_pre_ping=True,  # 🔥 évite les connexions bloquées
+    pool_pre_ping=True,  # 🔥 évite les connexions mortes
 )
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -19,3 +36,4 @@ def get_db():
         yield db
     finally:
         db.close()
+
