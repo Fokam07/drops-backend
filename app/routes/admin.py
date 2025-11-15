@@ -6,8 +6,13 @@ from app import models
 from app.utils.security import get_current_user, require_role
 from uuid import uuid4
 import shutil, os
+from app.utils.images import get_image_url
 
 router = APIRouter()
+
+
+UPLOAD_DIR = "uploads/products"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 # =============================
 # 🔐 Vérification rôle admin
@@ -101,12 +106,15 @@ def delete_category(id_category: int, db: Session = Depends(get_db), user=Depend
 # =============================
 # 📦 Gestion des produits
 # =============================
-UPLOAD_DIR = "uploads/products"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@router.get("/products", summary="Lister tous les produits (avec vendeur + catégorie)")
+
+# =============================
+# 📦 LISTER TOUS LES PRODUITS
+# =============================
+@router.get("/products", summary="Lister tous les produits (admin)")
 def list_all_products(db: Session = Depends(get_db), user=Depends(get_current_user)):
     check_admin(user)
+
     products = (
         db.query(models.Product)
         .join(models.Category, isouter=True)
@@ -123,31 +131,30 @@ def list_all_products(db: Session = Depends(get_db), user=Depends(get_current_us
         )
         .all()
     )
-    return [
-        {
+
+    result = []
+    for p in products:
+        result.append({
             "id_product": p.id_product,
             "nom": p.nom,
             "prix": p.prix,
             "stock": p.stock,
-            "image": p.image,
+            "image": get_image_url(p.image),
             "category": {"nom": p.category_nom} if p.category_nom else None,
-            "seller": {"nom": p.seller_nom, "prenom": p.seller_prenom} if p.seller_nom else None,
-        }
-        for p in products
-    ]
+            "seller": {
+                "nom": p.seller_nom,
+                "prenom": p.seller_prenom
+            } if p.seller_nom else None,
+        })
 
-def get_image_url(image_path: str):
-    """
-    Retourne une URL complète (http://localhost:8000/...) ou laisse un lien externe tel quel.
-    """
-    if not image_path:
-        return None
-    image_path = image_path.replace("\\", "/").replace("uploads/uploads/", "uploads/")
-    if image_path.startswith("http"):
-        return image_path
-    return f"http://localhost:8000/{image_path.lstrip('/')}"
+    return result
 
-@router.post("/products", summary="Ajouter un produit (ADMIN)")
+
+
+# =============================
+# ➕ AJOUT PRODUIT (ADMIN)
+# =============================
+@router.post("/products", summary="Ajouter un produit (admin)")
 def add_product_admin(
     nom: str = Form(...),
     prix: float = Form(...),
@@ -162,39 +169,31 @@ def add_product_admin(
 ):
     check_admin(user)
 
-    image_path = None
-
+    # 1 — Upload image locale
     if image_file:
-        # 🧩 Extension du fichier
         ext = os.path.splitext(image_file.filename)[1]
         file_name = f"{uuid4()}{ext}"
-
-        # 🧩 Répertoire de destination
-        UPLOAD_DIR = "uploads/products"
-        os.makedirs(UPLOAD_DIR, exist_ok=True)
-
-        # 🧩 Chemin complet du fichier
         file_path = os.path.join(UPLOAD_DIR, file_name)
 
-        # 🧩 Sauvegarde du fichier
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(image_file.file, buffer)
 
-        # ✅ CORRECTION : Stocker seulement "uploads/products/fichier.jpg"
-        # sans le "uploads/" en double
         image_path = f"uploads/products/{file_name}"
 
+    # 2 — Image externe
     elif image_url:
-        # 🔗 Lien externe
         image_path = image_url.strip()
 
-    # 🧱 Création du produit
+    else:
+        image_path = None
+
+    # 3 — Création
     new_product = models.Product(
         nom=nom,
         description=description,
         prix=prix,
         stock=stock,
-        image=image_path,  # ← Maintenant stocké correctement
+        image=image_path,
         id_category=id_category,
         id_seller=id_seller,
     )
@@ -204,20 +203,32 @@ def add_product_admin(
     db.refresh(new_product)
 
     return {
-        "message": "✅ Produit ajouté avec succès",
-        "produit": new_product,
-        "image_enregistree": image_path
+        "message": "Produit créé avec succès",
+        "product": new_product,
+        "image_url": get_image_url(image_path)
     }
 
-@router.delete("/products/{id_product}", summary="Supprimer un produit")
+# =============================
+# ❌ SUPPRESSION PRODUIT
+# =============================
+@router.delete("/products/{id_product}")
 def delete_product(id_product: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
     check_admin(user)
+
     product = db.query(models.Product).filter(models.Product.id_product == id_product).first()
     if not product:
-        raise HTTPException(status_code=404, detail="Produit introuvable")
+        raise HTTPException(404, "Produit introuvable")
+
+    # Supprimer fichier local si interne
+    if product.image and product.image.startswith("uploads/"):
+        file_path = product.image.replace("uploads/", "uploads/")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
     db.delete(product)
     db.commit()
-    return {"message": "Produit supprimé avec succès"}
+
+    return {"message": "Produit supprimé"}
 
 # =============================
 # 🎛️ Filtrage produits admin
@@ -268,26 +279,51 @@ def list_all_reviews(db: Session = Depends(get_db), user=Depends(get_current_use
 
 
 
-@router.post("/fix-image-paths", summary="Corriger les chemins d'images existants")
-def fix_image_paths(db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Route temporaire pour corriger les chemins d'images en double"""
-    check_admin(user)
-    
+@router.post("/fix-all-images", summary="Corrige TOUTES les images dans la base")
+def fix_all_images(db: Session = Depends(get_db), user=Depends(get_current_user)):
+    require_role(user, ["ADMIN"])
+
     products = db.query(models.Product).all()
-    fixed_count = 0
-    
-    for product in products:
-        if product.image and not product.image.startswith(("http://", "https://")):
-            original_path = product.image
-            # Corriger le chemin
-            corrected_path = original_path.replace("uploads/uploads/", "uploads/")
-            
-            if original_path != corrected_path:
-                product.image = corrected_path
-                fixed_count += 1
-                print(f"Corrigé: {original_path} → {corrected_path}")
-    
-    if fixed_count > 0:
+    fixed = 0
+
+    for p in products:
+        if not p.image:
+            continue
+
+        original = p.image
+        img = original.replace("\\", "/").strip()
+
+        # retirer les slashs du début
+        img = img.lstrip("/")
+
+        # retirer les doublons uploads/uploads/
+        while "uploads/uploads/" in img:
+            img = img.replace("uploads/uploads/", "uploads/")
+
+        # cas seller_products → déplacer dans products
+        if "seller_products/" in img:
+            filename = img.split("seller_products/", 1)[1]
+            img = f"uploads/products/{filename}"
+
+        # s'assurer que ça commence par uploads/
+        if not img.startswith("uploads/"):
+            img = "uploads/" + img
+
+        # s'assurer que dossier products/
+        if img.startswith("uploads/") and not "products/" in img:
+            # si un vendeur a ajouté → déplacer dans products
+            filename = img.split("uploads/", 1)[1]
+            img = "uploads/products/" + filename.split("/")[-1]
+
+        # final clean
+        img = img.replace("uploads/uploads/", "uploads/")
+
+        if img != original:
+            print(f"{original}  →  {img}")
+            p.image = img
+            fixed += 1
+
+    if fixed > 0:
         db.commit()
-    
-    return {"message": f"{fixed_count} chemins d'images corrigés"}
+
+    return {"corrigés": fixed}

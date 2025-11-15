@@ -8,8 +8,13 @@ from sqlalchemy import or_
 import shutil, os
 from fastapi import Form, UploadFile, File
 from uuid import uuid4
+from app.utils.images import get_image_url
 
 router = APIRouter()
+
+UPLOAD_DIR = "uploads/products"
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
 
 # ------------------------------------
 # 👤 Informations vendeur
@@ -29,16 +34,24 @@ def get_my_info(user=Depends(get_current_user)):
 # ------------------------------------
 # 🛍️ Produits du vendeur
 # ------------------------------------
-@router.get("/products", summary="Lister mes produits")
+@router.get("/products")
 def list_my_products(db: Session = Depends(get_db), user=Depends(get_current_user)):
     require_role(user, ["VENDEUR"])
-    products = db.query(models.Product).filter(models.Product.id_seller == user.id_user).all()
+
+    products = db.query(models.Product).filter(
+        models.Product.id_seller == user.id_user
+    ).all()
+
+    for p in products:
+        p.image_url = get_image_url(p.image)
+
     return products
 
-UPLOAD_DIR = "uploads/seller_products"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
 
-@router.post("/products", summary="Ajouter un produit (Vendeur)")
+# =============================
+# ➕ Ajouter un produit
+# =============================
+@router.post("/products")
 def add_product_seller(
     nom: str = Form(...),
     prix: float = Form(...),
@@ -52,16 +65,23 @@ def add_product_seller(
 ):
     require_role(user, ["VENDEUR"])
 
-    image_path = None
+    # Upload local
     if image_file:
-        ext = image_file.filename.split(".")[-1]
-        file_name = f"{uuid4()}.{ext}"
+        ext = os.path.splitext(image_file.filename)[1]
+        file_name = f"{uuid4()}{ext}"
         file_path = os.path.join(UPLOAD_DIR, file_name)
+
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(image_file.file, buffer)
-        image_path = f"/{file_path}"
+
+        image_path = f"uploads/products/{file_name}"
+
+    # URL externe
     elif image_url:
-        image_path = image_url
+        image_path = image_url.strip()
+
+    else:
+        image_path = None
 
     new_product = models.Product(
         nom=nom,
@@ -72,39 +92,74 @@ def add_product_seller(
         id_category=id_category,
         id_seller=user.id_user,
     )
+
     db.add(new_product)
     db.commit()
     db.refresh(new_product)
-    return {"message": "✅ Produit ajouté avec succès", "produit": new_product}
 
-@router.put("/products/{id_product}", summary="Modifier un produit")
-def update_product(id_product: int, update_data: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    new_product.image_url = get_image_url(image_path)
+
+    return {
+        "message": "Produit ajouté",
+        "product": new_product,
+    }
+
+
+# =============================
+# ✏️ Modifier un produit
+# =============================
+@router.put("/products/{id_product}")
+def update_product(
+    id_product: int,
+    update_data: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user)
+):
     require_role(user, ["VENDEUR"])
+
     product = db.query(models.Product).filter(
         models.Product.id_product == id_product,
         models.Product.id_seller == user.id_user
     ).first()
+
     if not product:
-        raise HTTPException(status_code=404, detail="Produit non trouvé")
-    
+        raise HTTPException(404, "Produit introuvable")
+
     for key, value in update_data.items():
         setattr(product, key, value)
+
     db.commit()
     db.refresh(product)
-    return {"message": "Produit mis à jour", "produit": product}
 
-@router.delete("/products/{id_product}", summary="Supprimer un produit")
-def delete_product(id_product: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    return {"message": "Produit mis à jour", "product": product}
+
+
+# =============================
+# ❌ Supprimer un produit
+# =============================
+@router.delete("/products/{id_product}")
+def delete_product(
+    id_product: int, db: Session = Depends(get_db), user=Depends(get_current_user)
+):
     require_role(user, ["VENDEUR"])
+
     product = db.query(models.Product).filter(
         models.Product.id_product == id_product,
         models.Product.id_seller == user.id_user
     ).first()
+
     if not product:
-        raise HTTPException(status_code=404, detail="Produit introuvable")
+        raise HTTPException(404, "Produit introuvable")
+
+    if product.image and product.image.startswith("uploads/"):
+        file_path = product.image
+        if os.path.exists(file_path):
+            os.remove(file_path)
+
     db.delete(product)
     db.commit()
-    return {"message": "Produit supprimé avec succès"}
+
+    return {"message": "Produit supprimé"}
 
 # ------------------------------------
 # 🧾 Commandes liées à ses produits
